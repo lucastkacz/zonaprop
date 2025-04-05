@@ -97,6 +97,14 @@ class LimpiadorCSVUnificado:
             variable=self.filtrar_m2_inconsistentes_var,
         ).pack(anchor=tk.W, pady=2)
 
+        # Checkbox para extraer barrio de dirección
+        self.extraer_barrio_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(
+            options_frame,
+            text="Extraer barrio de la dirección",
+            variable=self.extraer_barrio_var,
+        ).pack(anchor=tk.W, pady=2)
+
         # Log de operaciones
         log_frame = ttk.LabelFrame(main_frame, text="Log de Operaciones", padding="10")
         log_frame.pack(fill=tk.BOTH, expand=True, pady=5)
@@ -122,6 +130,12 @@ class LimpiadorCSVUnificado:
         self.proceso_btn = buttons_frame.winfo_children()[
             0
         ]  # Guardar referencia al botón
+
+        ttk.Button(
+            buttons_frame,
+            text="Info Columnas",
+            command=self.mostrar_info_columnas,
+        ).pack(side=tk.LEFT, padx=5)
 
         ttk.Button(buttons_frame, text="Salir", command=root.destroy).pack(
             side=tk.RIGHT, padx=5
@@ -649,6 +663,161 @@ class LimpiadorCSVUnificado:
             f"Se eliminaron {filas_eliminadas} filas duplicadas (se mantuvo la primera aparición)"
         )
 
+    def extraer_barrio_de_direccion(self):
+        """Extrae el barrio de la columna dirección y lo añade como una nueva columna"""
+        # Buscar posibles nombres de columna de dirección
+        columnas_direccion = ["direccion", "dirección", "address", "domicilio", "ubicacion", "ubicación"]
+        
+        columna_direccion = None
+        for col in columnas_direccion:
+            if col in self.df.columns:
+                columna_direccion = col
+                break
+                
+        # Buscar columna por coincidencia parcial si no se encuentra exacta
+        if columna_direccion is None:
+            for col in self.df.columns:
+                col_lower = col.lower()
+                if any(posible in col_lower for posible in ["direcc", "domicil", "ubicac", "address"]):
+                    columna_direccion = col
+                    break
+        
+        if self.df is None or columna_direccion is None:
+            self.log(
+                f"No se puede extraer barrio: no hay datos o no se encontró columna de dirección. Columnas disponibles: {', '.join(self.df.columns[:5])}..."
+            )
+            return 0
+
+        self.log(f"Extrayendo barrio de la columna '{columna_direccion}'...")
+
+        # Lista de barrios conocidos en Buenos Aires
+        barrios_conocidos = [
+            "Agronomía", "Almagro", "Balvanera", "Barracas", "Belgrano", 
+            "Boedo", "Caballito", "Chacarita", "Coghlan", "Colegiales", 
+            "Constitución", "Flores", "Floresta", "La Boca", "La Paternal", 
+            "Liniers", "Mataderos", "Monte Castro", "Montserrat", "Nueva Pompeya", 
+            "Núñez", "Palermo", "Parque Avellaneda", "Parque Chacabuco", "Parque Chas", 
+            "Parque Patricios", "Puerto Madero", "Recoleta", "Retiro", "Saavedra", 
+            "San Cristóbal", "San Nicolás", "San Telmo", "Vélez Sarsfield", "Versalles", 
+            "Villa Crespo", "Villa del Parque", "Villa Devoto", "Villa General Mitre", 
+            "Villa Lugano", "Villa Luro", "Villa Ortúzar", "Villa Pueyrredón", "Villa Real", 
+            "Villa Riachuelo", "Villa Santa Rita", "Villa Soldati", "Villa Urquiza"
+        ]
+        
+        # Subbarrios y variantes conocidas
+        sub_barrios = {
+            "Palermo Soho": "Palermo",
+            "Palermo Hollywood": "Palermo",
+            "Palermo Chico": "Palermo",
+            "Palermo Viejo": "Palermo",
+            "Barrio Norte": "Recoleta",
+            "Congreso": "Montserrat",
+            "Abasto": "Balvanera",
+            "Alto Palermo": "Palermo",
+            "Las Cañitas": "Palermo",
+            "Parque Centenario": "Caballito",
+            "Once": "Balvanera",
+            "Microcentro": "San Nicolás",
+            "Tribunales": "San Nicolás",
+            "Villa Real": "Monte Castro"
+        }
+
+        # Contador de barrios encontrados
+        barrios_encontrados = 0
+        
+        # Crear la columna de barrio
+        self.df["barrio"] = ""
+        
+        # Mostrar ejemplo de las primeras direcciones para depuración
+        self.log(f"Ejemplos de direcciones: {str(self.df[columna_direccion].head(3).tolist())}")
+        
+        # Función para extraer el barrio de una dirección
+        def obtener_barrio(direccion):
+            if pd.isna(direccion) or not isinstance(direccion, str):
+                return ""
+            
+            # Caso 1: Formato "Calle, Barrio, Capital Federal"
+            if "Capital Federal" in direccion:
+                partes = direccion.split(",")
+                # Buscar el elemento que está antes de "Capital Federal"
+                for i, parte in enumerate(partes):
+                    if "Capital Federal" in partes[i]:
+                        if i > 0:
+                            barrio_candidato = partes[i-1].strip()
+                            # Verificar si es un barrio conocido o similar
+                            for barrio in barrios_conocidos:
+                                if barrio.lower() in barrio_candidato.lower():
+                                    return barrio
+                            
+                            # Si llegamos aquí y no hay match exacto, devolvemos la parte como está
+                            return barrio_candidato
+            
+            # Caso 2: Formato "Calle, Subbarrio, Barrio"
+            # Primero buscamos si hay subbarrios conocidos
+            for subbarrio, barrio_principal in sub_barrios.items():
+                if subbarrio in direccion:
+                    return barrio_principal
+            
+            # Caso 3: Buscar cualquier barrio conocido en la dirección
+            for barrio in barrios_conocidos:
+                # Verificar si el barrio aparece como una palabra completa
+                # usando una expresión regular para evitar matchear calles con nombres de barrios
+                if re.search(r'(?:^|[^\w])' + re.escape(barrio) + r'(?:$|[^\w])', direccion, re.IGNORECASE):
+                    # Verificar que no sea parte del nombre de una calle
+                    # Si aparece después de una coma, probablemente sea un barrio y no una calle
+                    partes = direccion.split(",")
+                    for i, parte in enumerate(partes):
+                        if barrio.lower() in parte.lower().strip() and i > 0:
+                            return barrio
+            
+            # Caso 4: Última parte después de la última coma si hay múltiples comas
+            partes = direccion.split(",")
+            if len(partes) >= 3:
+                ultimo = partes[-1].strip()
+                # Verificar si la última parte es un barrio conocido
+                for barrio in barrios_conocidos:
+                    if barrio.lower() in ultimo.lower():
+                        return barrio
+                
+                # Si no es un barrio conocido, intentar con la penúltima parte
+                penultimo = partes[-2].strip()
+                for barrio in barrios_conocidos:
+                    if barrio.lower() in penultimo.lower():
+                        return barrio
+            
+            # Si no se encontró barrio, devolver vacío
+            return ""
+        
+        # Aplicar la función a cada dirección
+        self.df["barrio"] = self.df[columna_direccion].apply(obtener_barrio)
+        
+        # Mostrar ejemplos de barrios identificados para depuración
+        ejemplos = list(zip(self.df[columna_direccion].head(3).tolist(), self.df["barrio"].head(3).tolist()))
+        self.log(f"Ejemplos de barrios identificados: {ejemplos}")
+        
+        # Contar cuántos barrios se encontraron
+        barrios_encontrados = (self.df["barrio"] != "").sum()
+        
+        # Mostrar el porcentaje de éxito
+        if len(self.df) > 0:
+            porcentaje = (barrios_encontrados / len(self.df)) * 100
+            self.log(f"Porcentaje de direcciones con barrio identificado: {porcentaje:.2f}%")
+        
+        # Reorganizar las columnas para poner "barrio" justo después de columna_direccion
+        columnas = list(self.df.columns)
+        if columna_direccion in columnas and "barrio" in columnas:
+            # Obtener posición de direccion
+            pos_direccion = columnas.index(columna_direccion)
+            # Eliminar barrio de su posición actual
+            columnas.remove("barrio")
+            # Insertar barrio después de direccion
+            columnas.insert(pos_direccion + 1, "barrio")
+            # Reordenar las columnas
+            self.df = self.df[columnas]
+        
+        self.log(f"Se encontraron barrios para {barrios_encontrados} propiedades")
+        return barrios_encontrados
+
     def procesar_y_guardar(self):
         """Procesar datos y guardar el resultado"""
         if self.df is None:
@@ -666,6 +835,7 @@ class LimpiadorCSVUnificado:
             total_m2_completados = 0
             cubiertos_m2_completados = 0
             filas_m2_inconsistentes = 0
+            barrios_encontrados = 0
 
             # Ejecutar procesos según opciones seleccionadas
             if self.eliminar_duplicados_var.get() and "url" in self.df.columns:
@@ -690,6 +860,9 @@ class LimpiadorCSVUnificado:
 
             if self.filtrar_m2_inconsistentes_var.get():
                 filas_m2_inconsistentes = self.filtrar_metros_inconsistentes()
+                
+            if self.extraer_barrio_var.get():
+                barrios_encontrados = self.extraer_barrio_de_direccion()
 
             # Pedir ubicación para guardar el archivo
             file_path = filedialog.asksaveasfilename(
@@ -747,6 +920,9 @@ class LimpiadorCSVUnificado:
 
                 if self.filtrar_m2_inconsistentes_var.get():
                     resumen += f"- Filas con m² inconsistentes eliminadas: {filas_m2_inconsistentes}\n"
+                    
+                if self.extraer_barrio_var.get():
+                    resumen += f"- Barrios extraídos de direcciones: {barrios_encontrados}\n"
 
                 messagebox.showinfo("Proceso Completado", resumen)
                 self.log(resumen)
@@ -754,6 +930,26 @@ class LimpiadorCSVUnificado:
         except Exception as e:
             messagebox.showerror("Error", f"Error durante el procesamiento: {str(e)}")
             self.log(f"ERROR: {str(e)}")
+
+    def mostrar_info_columnas(self):
+        """Mostrar información sobre las columnas del DataFrame"""
+        if self.df is None:
+            messagebox.showinfo("Información", "No hay datos cargados.")
+            return
+
+        self.log("Mostrando información sobre las columnas del DataFrame...")
+
+        # Crear una cadena para almacenar la información de las columnas
+        info_columnas = ""
+
+        # Obtener información sobre cada columna
+        for columna, tipo in zip(self.df.columns, self.df.dtypes):
+            info_columnas += f"Columna: {columna}, Tipo: {tipo}\n"
+
+        # Mostrar la información en un cuadro de diálogo
+        messagebox.showinfo("Información sobre las Columnas", info_columnas)
+
+        self.log("Información sobre las columnas mostrada.")
 
 
 if __name__ == "__main__":
