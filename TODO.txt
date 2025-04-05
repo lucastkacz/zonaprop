@@ -1,0 +1,5 @@
+expensas muy bajas
+publicado =/= hoy
+totm2 no este o sea menor a cub m2
+si cubm2 esta vacio hacerlo igual a totm2
+reemplazar antiguedad a estrenadr a 0
